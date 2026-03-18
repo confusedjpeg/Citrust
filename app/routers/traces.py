@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 import logging
+import asyncio
 
 from ..models.schemas import (
     Trace,
@@ -387,6 +388,113 @@ async def cleanup_old_traces(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to cleanup traces: {str(e)}"
+        )
+
+
+@router.post("/{trace_id}/evaluate")
+async def evaluate_trace(trace_id: str):
+    """
+    Evaluate a trace using VaultGemma for safety and quality scoring
+    
+    Args:
+        trace_id: The trace ID to evaluate
+        
+    Returns:
+        Safety and quality evaluation results
+    """
+    try:
+        # Get the trace
+        trace = await trace_storage.get_trace(trace_id)
+        if not trace:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trace {trace_id} not found"
+            )
+        
+        # Import and initialize evaluator
+        from ..services.vaultgemma_evaluator import VaultGemmaEvaluator
+        from ..config import settings
+        
+        if not settings.vaultgemma_enabled:
+            return ApiResponse(
+                success=False,
+                data=None,
+                message="VaultGemma evaluation is not enabled. Set VAULTGEMMA_ENABLED=true",
+                timestamp=datetime.now(timezone.utc)
+            )
+        
+        evaluator = VaultGemmaEvaluator()
+        
+        # Initialize if not already done (in background)
+        if not evaluator._initialized:
+            try:
+                await evaluator.initialize()
+            except Exception as e:
+                logger.error(f"Failed to initialize evaluator: {e}")
+                return ApiResponse(
+                    success=False,
+                    data=None,
+                    message=f"Failed to initialize evaluator: {str(e)}",
+                    timestamp=datetime.now(timezone.utc)
+                )
+        
+        # Extract trace content for evaluation
+        trace_content_parts = []
+        for span in trace.get("spans", []):
+            input_data = span.get("input_data", {})
+            output_data = span.get("output_data", {})
+            
+            if input_data:
+                trace_content_parts.append(f"Input: {str(input_data)}")
+            if output_data:
+                trace_content_parts.append(f"Output: {str(output_data)}")
+        
+        trace_content = " ".join(trace_content_parts)
+        
+        if not trace_content:
+            return ApiResponse(
+                success=False,
+                data=None,
+                message="Trace has no content to evaluate",
+                timestamp=datetime.now(timezone.utc)
+            )
+        
+        # Run evaluations in parallel using asyncio.gather
+        safety_result, quality_result = await asyncio.gather(
+            evaluator.evaluate_safety(trace_content),
+            evaluator.evaluate_quality(trace_content),
+            return_exceptions=True
+        )
+        
+        # Handle exceptions
+        if isinstance(safety_result, Exception):
+            logger.error(f"Safety evaluation failed: {safety_result}")
+            safety_result = {"error": str(safety_result), "score": 0.5}
+        
+        if isinstance(quality_result, Exception):
+            logger.error(f"Quality evaluation failed: {quality_result}")
+            quality_result = {"error": str(quality_result), "score": 0.5}
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "trace_id": trace_id,
+                "safety": safety_result,
+                "quality": quality_result,
+                "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                "pii_redacted": trace_storage.pii_redactor is not None
+            },
+            message="Trace evaluated successfully",
+            timestamp=datetime.now(timezone.utc)
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error evaluating trace {trace_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to evaluate trace: {str(e)}"
         )
 
 

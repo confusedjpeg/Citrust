@@ -324,6 +324,39 @@ export async function getSessionTraces(
   return response.json();
 }
 
+export async function evaluateTrace(traceId: string): Promise<{
+  success: boolean;
+  data: {
+    trace_id: string;
+    safety: {
+      score: number;
+      reasoning: string;
+      evaluator: string;
+    };
+    quality: {
+      score: number;
+      dimensions: {
+        accuracy: number;
+        relevance: number;
+        coherence: number;
+        completeness: number;
+      };
+      reasoning: string;
+      evaluator: string;
+    };
+    evaluated_at: string;
+    pii_redacted: boolean;
+  };
+  message: string;
+}> {
+  const response = await fetch(`${API_BASE}/api/v1/traces/${traceId}/evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) throw new Error('Failed to evaluate trace');
+  return response.json();
+}
+
 // ============================================
 // HEALTH CHECK
 // ============================================
