@@ -39,6 +39,18 @@ export function formatDuration(ms: number | undefined): string {
 }
 
 /**
+ * Format latency in milliseconds with max 2 decimal places
+ * Returns string without "ms" suffix for flexible use
+ */
+export function formatLatencyMs(ms: number | undefined | null): string {
+    if (ms === undefined || ms === null) return '0';
+    
+    // Round to max 2 decimal places and remove trailing zeros
+    const rounded = Math.round(ms * 100) / 100;
+    return String(rounded);
+}
+
+/**
  * Format large numbers with K/M suffixes
  */
 export function formatNumber(num: number | undefined): string {

@@ -173,9 +173,9 @@ export const PrivacyTracesPage: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 overflow-y-auto p-8">
+      <div className="flex-1 overflow-y-auto p-8 min-h-0">
         {activeView === 'traces' && (
-          <div className="space-y-6">
+          <div className="space-y-6 h-full overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" text="Loading traces..." />
@@ -299,7 +299,7 @@ export const PrivacyTracesPage: React.FC = () => {
         )}
 
         {activeView === 'evaluations' && (
-          <div className="space-y-6">
+          <div className="space-y-6 h-full overflow-y-auto">
             {campaignsLoading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" text="Loading campaigns..." />
@@ -350,7 +350,7 @@ export const PrivacyTracesPage: React.FC = () => {
         )}
 
         {activeView === 'audit' && (
-          <div>
+          <div className="h-full overflow-y-auto">
             <PrivacyAuditView />
           </div>
         )}

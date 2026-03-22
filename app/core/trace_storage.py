@@ -93,6 +93,31 @@ class TraceStorage:
         except Exception as e:
             logger.error(f"Failed to create trace indexes: {e}")
     
+    async def _redact_value(self, value: Any) -> Any:
+        """
+        Recursively redact PII from any value type (dict, str, list, or other)
+        
+        Args:
+            value: The value to redact (can be dict, str, list, or other)
+            
+        Returns:
+            Redacted value of the same type
+        """
+        if not self.pii_redactor:
+            return value
+        
+        if isinstance(value, str):
+            return await self.pii_redactor.redact(value)
+        elif isinstance(value, dict):
+            return await self._redact_dict(value)
+        elif isinstance(value, list):
+            redacted_list = []
+            for item in value:
+                redacted_list.append(await self._redact_value(item))
+            return redacted_list
+        else:
+            return value
+    
     async def _redact_dict(self, data: dict) -> dict:
         """Recursively redact PII from dictionary values"""
         if not self.pii_redactor:
@@ -100,22 +125,7 @@ class TraceStorage:
         
         redacted = {}
         for key, value in data.items():
-            if isinstance(value, str):
-                redacted[key] = await self.pii_redactor.redact(value)
-            elif isinstance(value, dict):
-                redacted[key] = await self._redact_dict(value)
-            elif isinstance(value, list):
-                redacted_list = []
-                for item in value:
-                    if isinstance(item, dict):
-                        redacted_list.append(await self._redact_dict(item))
-                    elif isinstance(item, str):
-                        redacted_list.append(await self.pii_redactor.redact(item))
-                    else:
-                        redacted_list.append(item)
-                redacted[key] = redacted_list
-            else:
-                redacted[key] = value
+            redacted[key] = await self._redact_value(value)
         return redacted
     
     async def store_trace(self, trace: TraceData) -> str:
@@ -140,15 +150,15 @@ class TraceStorage:
                 if "spans" in trace_dict:
                     for span in trace_dict["spans"]:
                         if "input_data" in span and span["input_data"]:
-                            span["input_data"] = await self._redact_dict(span["input_data"])
+                            span["input_data"] = await self._redact_value(span["input_data"])
                         if "output_data" in span and span["output_data"]:
-                            span["output_data"] = await self._redact_dict(span["output_data"])
+                            span["output_data"] = await self._redact_value(span["output_data"])
                         if "metadata" in span and span["metadata"]:
-                            span["metadata"] = await self._redact_dict(span["metadata"])
+                            span["metadata"] = await self._redact_value(span["metadata"])
                 
                 # Redact trace-level metadata
                 if "metadata" in trace_dict and trace_dict["metadata"]:
-                    trace_dict["metadata"] = await self._redact_dict(trace_dict["metadata"])
+                    trace_dict["metadata"] = await self._redact_value(trace_dict["metadata"])
             
             await self._collection.insert_one(trace_dict)
             logger.debug(f"Stored trace {trace.id} with {len(trace.spans)} spans")

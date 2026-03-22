@@ -17,7 +17,10 @@ vi.mock('../../api_evaluations', () => ({
     total_preferences: 0,
     total_evaluations: 0
   })),
-  fetchAvailableModels: vi.fn(() => Promise.resolve([])),
+  fetchAvailableModels: vi.fn(() => Promise.resolve([
+    { model_name: 'gpt-4', is_available: true },
+    { model_name: 'claude-3', is_available: true },
+  ])),
   seedSampleData: vi.fn(() => Promise.resolve({})),
 }));
 
@@ -45,7 +48,7 @@ describe('EvaluationsDashboard - VaultGemma Integration', () => {
     });
   });
   
-  it('triggers VaultGemma pipeline and shows loading state', async () => {
+  it('opens model selection panel and shows models when clicking Run Private Eval', async () => {
     const user = userEvent.setup();
     render(<MockedDashboard />);
     
@@ -56,11 +59,17 @@ describe('EvaluationsDashboard - VaultGemma Integration', () => {
     const button = screen.getByText(/Run Private Eval/i);
     await user.click(button);
     
-    // Button should show "Anonymizing & Scoring..." during run
-    expect(screen.getByText(/Anonymizing & Scoring.../i)).toBeInTheDocument();
+    // Should show model selection panel with available models
+    await waitFor(() => {
+      expect(screen.getByText(/Select Model for Private Evaluation/i)).toBeInTheDocument();
+    });
+    
+    // Model chips should be visible
+    expect(screen.getByText('gpt-4')).toBeInTheDocument();
+    expect(screen.getByText('claude-3')).toBeInTheDocument();
   });
 
-  it('shows Delta View after running private eval with privacy mode enabled', async () => {
+  it('allows selecting a model and running private eval', async () => {
     const user = userEvent.setup();
     render(<MockedDashboard />);
     
@@ -69,12 +78,21 @@ describe('EvaluationsDashboard - VaultGemma Integration', () => {
       expect(screen.getByText(/Run Private Eval/i)).toBeInTheDocument();
     });
     
+    // Open the panel
     const button = screen.getByText(/Run Private Eval/i);
     await user.click(button);
     
-    // Wait for the mock async operation to complete (2 seconds in implementation)
+    // Wait for panel to show
     await waitFor(() => {
-      expect(screen.getByText(/Delta View/i)).toBeInTheDocument();
-    }, { timeout: 3000 });
+      expect(screen.getByText('gpt-4')).toBeInTheDocument();
+    });
+    
+    // Select a model
+    const modelButton = screen.getByText('gpt-4');
+    await user.click(modelButton);
+    
+    // Should enable the "Run Eval on gpt-4" button
+    const runButton = screen.getByText(/Run Eval on gpt-4/i);
+    expect(runButton).not.toBeDisabled();
   });
 });

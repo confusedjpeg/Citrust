@@ -17,11 +17,33 @@ import {
   type AvailableModel,
   type Stats,
 } from '../api_evaluations';
+import { getTraces, evaluateTrace } from '../api';
 import MetricCard from '../components/MetricCard';
 import StatusBadge from '../components/StatusBadge';
 import { LoadingSpinner, EmptyState, ErrorState } from '../components/UIComponents';
 import { usePrivacy } from '../context/PrivacyContext';
 import { Shield } from 'lucide-react';
+
+// Private Eval Result Type
+interface PrivateEvalResult {
+  modelName: string;
+  traceId: string;
+  safety: {
+    score: number;
+    reasoning: string;
+  };
+  quality: {
+    score: number;
+    dimensions: {
+      accuracy: number;
+      relevance: number;
+      coherence: number;
+      completeness: number;
+    };
+    reasoning: string;
+  };
+  evaluatedAt: string;
+}
 
 type TabType = 'overview' | 'campaigns' | 'test-sets' | 'compare';
 
@@ -43,20 +65,63 @@ const EvaluationsDashboard: React.FC = () => {
   // VaultGemma Integration
   const { isPrivacyModeEnabled, activeCampaignID, setActiveCampaign } = usePrivacy();
   const [runningPrivateEval, setRunningPrivateEval] = useState(false);
+  const [showPrivateEvalPanel, setShowPrivateEvalPanel] = useState(false);
+  const [selectedPrivateEvalModel, setSelectedPrivateEvalModel] = useState<string>('');
+  const [privateEvalResult, setPrivateEvalResult] = useState<PrivateEvalResult | null>(null);
+  const [privateEvalError, setPrivateEvalError] = useState<string | null>(null);
 
-  const handleRunPrivateEval = async () => {
-    setRunningPrivateEval(true);
-    // MVP: Simulate VaultGemma pipeline
-    // TODO (Future): Real implementation would call:
-    // 1. GET /api/traces (fetch recent traces)
-    // 2. POST /api/pii/detect (Presidio PII detection)
-    // 3. POST /vault/transit/encrypt (Vault encryption)
-    // 4. POST /api/evaluations/vaultgemma (VaultGemma scoring)
+  const handleRunPrivateEval = async (modelName?: string) => {
+    const model = modelName || selectedPrivateEvalModel;
+    if (!model) return;
     
-    setTimeout(() => {
+    setRunningPrivateEval(true);
+    setPrivateEvalError(null);
+    
+    try {
+      // Step 1: Fetch recent traces to evaluate
+      const tracesResult = await getTraces({ limit: 10 });
+      const traces = tracesResult.traces || [];
+      
+      if (traces.length === 0) {
+        setPrivateEvalError('No traces available for evaluation. Create some chat traces first.');
+        setRunningPrivateEval(false);
+        return;
+      }
+      
+      // Step 2: Pick the most recent trace for evaluation
+      const traceToEvaluate = traces[0];
+      
+      // Step 3: Call the evaluate API
+      const evalResponse = await evaluateTrace(traceToEvaluate.trace_id);
+      
+      if (evalResponse.success && evalResponse.data) {
+        const result: PrivateEvalResult = {
+          modelName: model,
+          traceId: evalResponse.data.trace_id,
+          safety: {
+            score: evalResponse.data.safety.score,
+            reasoning: evalResponse.data.safety.reasoning,
+          },
+          quality: {
+            score: evalResponse.data.quality.score,
+            dimensions: evalResponse.data.quality.dimensions,
+            reasoning: evalResponse.data.quality.reasoning,
+          },
+          evaluatedAt: evalResponse.data.evaluated_at,
+        };
+        
+        setPrivateEvalResult(result);
+        setActiveCampaign(`vaultgemma-eval-${model}-${Date.now()}`);
+      } else {
+        setPrivateEvalError('Evaluation completed but returned no data');
+      }
+    } catch (err: any) {
+      console.error('Private eval failed:', err);
+      setPrivateEvalError(err.message || 'Failed to run private evaluation');
+    } finally {
       setRunningPrivateEval(false);
-      setActiveCampaign(`vaultgemma-eval-${Date.now()}`);
-    }, 2000);
+      setShowPrivateEvalPanel(false);
+    }
   };
 
   const loadData = useCallback(async () => {
@@ -184,63 +249,149 @@ const EvaluationsDashboard: React.FC = () => {
             <span className="material-symbols-outlined text-[18px] mr-2">add</span>
             New Test Set
           </button>
-          {/* VaultGemma Private Eval Button */}
+          {/* VaultGemma Private Eval Button - Opens Panel */}
           <button
-            onClick={handleRunPrivateEval}
+            onClick={() => setShowPrivateEvalPanel(!showPrivateEvalPanel)}
             disabled={runningPrivateEval}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm bg-[#FFB800] hover:bg-yellow-600 text-black transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+              showPrivateEvalPanel 
+                ? 'bg-yellow-600 text-black ring-2 ring-yellow-400/50' 
+                : 'bg-[#FFB800] hover:bg-yellow-600 text-black'
+            }`}
           >
             <Shield size={16} />
-            {runningPrivateEval ? 'Anonymizing & Scoring...' : 'Run Private Eval'}
+            {runningPrivateEval ? 'Running...' : 'Run Private Eval'}
           </button>
         </div>
+        
+        {/* Private Eval Model Selection Panel */}
+        {showPrivateEvalPanel && (
+          <div className="mt-4 p-4 rounded-xl border border-[#FFB800]/30 bg-[#FFB800]/5">
+            <h4 className="text-sm font-semibold text-[#FFB800] mb-3 flex items-center gap-2">
+              <Shield size={16} />
+              Select Model for Private Evaluation
+            </h4>
+            <div className="flex flex-wrap gap-3 mb-4">
+              {availableModels.filter(m => m.is_available).map((model) => (
+                <button
+                  key={model.model_name}
+                  type="button"
+                  onClick={() => setSelectedPrivateEvalModel(model.model_name)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all border ${
+                    selectedPrivateEvalModel === model.model_name
+                      ? 'bg-[#FFB800] text-black border-[#FFB800]'
+                      : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10 hover:border-white/20'
+                  }`}
+                >
+                  {model.model_name}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => handleRunPrivateEval()}
+                disabled={runningPrivateEval || !selectedPrivateEvalModel}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm bg-[#FFB800] hover:bg-yellow-600 text-black transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Shield size={16} />
+                {runningPrivateEval ? 'Anonymizing & Scoring...' : `Run Eval on ${selectedPrivateEvalModel || 'Selected Model'}`}
+              </button>
+              <button
+                onClick={() => setShowPrivateEvalPanel(false)}
+                className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Delta View - VaultGemma Comparison (Privacy Mode Only) */}
-      {isPrivacyModeEnabled && activeCampaignID && (
+      {isPrivacyModeEnabled && activeCampaignID && privateEvalResult && (
         <div className="glass-panel rounded-2xl p-6 border-2 border-[#FFB800]">
           <div className="flex items-center gap-2 mb-4">
             <Shield className="text-[#FFB800]" size={24} />
-            <h3 className="text-xl font-bold text-white">Delta View: VaultGemma vs GPT-4</h3>
+            <h3 className="text-xl font-bold text-white">Delta View: {privateEvalResult.modelName} Evaluation</h3>
           </div>
           <p className="text-sm text-gray-400 mb-6">
-            <span className="text-[#FFB800] font-bold">0% Memorization Risk</span> • Differential Privacy Active (ε=1.0)
+            <span className="text-[#FFB800] font-bold">Privacy-Preserved Evaluation</span> • Trace ID: <code className="text-xs">{privateEvalResult.traceId}</code>
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Standard Run */}
+            {/* Safety Score */}
             <div className="glass-panel rounded-lg p-5">
-              <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Standard Run</div>
-              <div className="text-2xl font-bold text-white mb-1">GPT-4</div>
+              <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Safety Analysis</div>
+              <div className="text-2xl font-bold text-white mb-1">Safety Score</div>
               <div className="flex items-baseline gap-2 mb-4">
-                <span className="text-4xl font-bold text-blue-400">0.96</span>
-                <span className="text-sm text-gray-400">Safety Score</span>
+                <span className={`text-4xl font-bold ${privateEvalResult.safety.score >= 0.8 ? 'text-green-400' : privateEvalResult.safety.score >= 0.5 ? 'text-yellow-400' : 'text-red-400'}`}>
+                  {(privateEvalResult.safety.score * 100).toFixed(0)}%
+                </span>
+                <span className="text-sm text-gray-400">confidence</span>
               </div>
-              <div className="text-xs text-gray-500">Risk: Data may be memorized</div>
+              <div className="text-xs text-gray-400 line-clamp-3">{privateEvalResult.safety.reasoning}</div>
             </div>
             
-            {/* VaultGemma Private Run */}
+            {/* Quality Score */}
             <div className="glass-panel rounded-lg p-5 border-l-4 border-[#FFB800] bg-yellow-500/5">
-              <div className="text-xs text-[#FFB800] uppercase tracking-wider mb-2 font-bold">VaultGemma Private Run [DP]</div>
-              <div className="text-2xl font-bold text-white mb-1">VaultGemma-1B</div>
+              <div className="text-xs text-[#FFB800] uppercase tracking-wider mb-2 font-bold">Quality Analysis</div>
+              <div className="text-2xl font-bold text-white mb-1">Quality Score</div>
               <div className="flex items-baseline gap-2 mb-4">
-                <span className="text-4xl font-bold text-[#FFB800]">0.98</span>
-                <span className="text-sm text-gray-400">Safety Score</span>
+                <span className="text-4xl font-bold text-[#FFB800]">
+                  {(privateEvalResult.quality.score * 100).toFixed(0)}%
+                </span>
+                <span className="text-sm text-gray-400">overall</span>
               </div>
-              <div className="text-xs text-green-400">✓ Zero Data Leakage Guarantee</div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Accuracy:</span>
+                  <span className="text-white font-mono">{(privateEvalResult.quality.dimensions.accuracy * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Relevance:</span>
+                  <span className="text-white font-mono">{(privateEvalResult.quality.dimensions.relevance * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Coherence:</span>
+                  <span className="text-white font-mono">{(privateEvalResult.quality.dimensions.coherence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Completeness:</span>
+                  <span className="text-white font-mono">{(privateEvalResult.quality.dimensions.completeness * 100).toFixed(0)}%</span>
+                </div>
+              </div>
             </div>
           </div>
           
-          {/* Link to Failing Trace */}
+          {/* Link to Trace */}
           <div className="mt-6 pt-6 border-t border-white/10">
-            <p className="text-sm text-gray-400 mb-3">Campaign ID: <code className="text-[#FFB800] font-mono">{activeCampaignID}</code></p>
+            <p className="text-sm text-gray-400 mb-3">
+              Evaluated at: <code className="text-[#FFB800] font-mono">{new Date(privateEvalResult.evaluatedAt).toLocaleString()}</code>
+            </p>
             <Link 
-              to="/traces?highlight=trace-failed-123" 
+              to={`/traces?highlight=${privateEvalResult.traceId}`}
               className="inline-flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 transition-colors"
             >
               <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
-              View Failing Trace Detail in Traces Tab
+              View Trace Detail
             </Link>
           </div>
+        </div>
+      )}
+
+      {/* Error Display for Private Eval */}
+      {privateEvalError && (
+        <div className="glass-panel rounded-2xl p-6 border-2 border-red-500/50 bg-red-500/10">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="material-symbols-outlined text-red-400">error</span>
+            <h3 className="text-lg font-bold text-red-400">Evaluation Error</h3>
+          </div>
+          <p className="text-sm text-gray-300">{privateEvalError}</p>
+          <button
+            onClick={() => setPrivateEvalError(null)}
+            className="mt-4 text-sm text-gray-400 hover:text-white"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -743,42 +894,82 @@ const CampaignDetailModal: React.FC<CampaignDetailModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+      className="fixed inset-0 bg-black/80 backdrop-blur-lg z-50 flex items-center justify-center p-6 animate-fadeIn"
       onClick={onClose}
     >
       <div
-        className="glass-panel rounded-2xl max-w-4xl w-full max-h-[80vh] overflow-y-auto"
+        className="w-full max-w-5xl max-h-[90vh] flex flex-col rounded-3xl overflow-hidden animate-fadeInUp"
+        style={{
+          background: 'linear-gradient(135deg, #0a0e14 0%, #1a1f2e 50%, #0f1419 100%)',
+          border: '2px solid rgba(196, 255, 97, 0.2)',
+          boxShadow: '0 25px 80px rgba(0, 0, 0, 0.6), 0 0 100px rgba(196, 255, 97, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+        }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-6 border-b border-white/10 flex items-start justify-between">
-          <div>
-            <h2 className="text-2xl font-bold text-white mb-2">{campaignData.name}</h2>
-            <StatusBadge
-              status={
-                campaignData.status === 'completed' ? 'success' :
-                campaignData.status === 'running' ? 'running' :
-                campaignData.status === 'failed' ? 'error' : 'neutral'
-              }
-            />
+        {/* Header */}
+        <div
+          className="relative px-8 py-6 border-b"
+          style={{
+            background: 'linear-gradient(180deg, rgba(196, 255, 97, 0.05) 0%, rgba(0, 0, 0, 0.2) 100%)',
+            borderBottom: '1px solid rgba(196, 255, 97, 0.2)',
+          }}
+        >
+          {/* Decorative corner brackets */}
+          <div className="absolute top-4 left-4 w-6 h-6 border-l-2 border-t-2 border-primary/40" />
+          <div className="absolute top-4 right-4 w-6 h-6 border-r-2 border-t-2 border-primary/40" />
+          
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-2">
+                <h2 className="text-2xl font-bold text-white font-mono tracking-tight">{campaignData.name}</h2>
+                <StatusBadge
+                  status={
+                    campaignData.status === 'completed' ? 'success' :
+                    campaignData.status === 'running' ? 'running' :
+                    campaignData.status === 'failed' ? 'error' : 'neutral'
+                  }
+                />
+              </div>
+              <div className="flex items-center gap-3 text-sm">
+                <span className="text-gray-400 font-mono">ID: {campaignData.id.slice(0, 8)}...</span>
+                <span className="text-gray-600">•</span>
+                <span className="text-gray-400 font-mono">{campaignData.evaluation_type}</span>
+                <span className="text-gray-600">•</span>
+                <span className="text-primary font-mono">{campaignData.model_configs.map(m => m.model_name).join(' vs ')}</span>
+              </div>
+            </div>
+            <button 
+              onClick={onClose} 
+              className="p-2.5 rounded-xl hover:bg-white/10 transition-all duration-200 text-gray-400 hover:text-white border border-transparent hover:border-white/20"
+            >
+              <span className="material-symbols-outlined text-[24px]">close</span>
+            </button>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <span className="material-symbols-outlined text-[24px]">close</span>
-          </button>
         </div>
 
-        <div className="p-6 space-y-6">
-          {/* Progress */}
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-8 space-y-8">
+          {/* Progress (Running) */}
           {campaignData.status === 'running' && (
-            <div>
-              <div className="flex justify-between text-sm mb-2">
-                <span className="text-gray-400">Progress</span>
-                <span className="text-white">{Math.round(campaignData.progress)}%</span>
+            <div
+              className="p-6 rounded-2xl"
+              style={{
+                background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(37, 99, 235, 0.03))',
+                border: '1px solid rgba(59, 130, 246, 0.3)',
+              }}
+            >
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-sm font-bold text-blue-400 uppercase tracking-wider font-mono">Progress</span>
+                <span className="text-2xl font-bold text-blue-400 font-mono">{Math.round(campaignData.progress)}%</span>
               </div>
-              <div className="h-3 bg-white/10 rounded-full overflow-hidden">
+              <div className="h-4 bg-blue-500/10 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-primary transition-all"
+                  className="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-500"
                   style={{ width: `${campaignData.progress}%` }}
                 />
+              </div>
+              <div className="mt-3 text-sm text-gray-400 font-mono">
+                {campaignData.completed_test_cases} / {campaignData.total_test_cases} test cases completed
               </div>
             </div>
           )}
@@ -786,38 +977,63 @@ const CampaignDetailModal: React.FC<CampaignDetailModalProps> = ({
           {/* Model Scores */}
           {campaignData.status === 'completed' && Object.keys(campaignData.model_scores).length > 0 && (
             <div>
-              <h3 className="text-lg font-bold text-white mb-4">Results</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2 font-mono">
+                <span className="material-symbols-outlined text-primary">assessment</span>
+                Model Results
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {Object.entries(campaignData.model_scores).map(([modelName, scores]) => (
-                  <div key={modelName} className="glass-panel rounded-lg p-4">
-                    <h4 className="text-white font-medium mb-2">{modelName}</h4>
-                    <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Pass Rate</span>
-                        <span className="text-primary">
+                  <div
+                    key={modelName}
+                    className="relative p-6 rounded-2xl overflow-hidden group hover:scale-[1.01] transition-transform duration-300"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(196, 255, 97, 0.05), rgba(196, 255, 97, 0.02))',
+                      border: '1px solid rgba(196, 255, 97, 0.2)',
+                    }}
+                  >
+                    <div className="absolute top-0 right-0 w-20 h-20 bg-gradient-to-br from-primary/10 to-transparent rounded-full blur-2xl" />
+                    <h4 className="text-xl font-bold text-white mb-4 font-mono">{modelName}</h4>
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-400 text-sm font-mono">Pass Rate</span>
+                        <span className="text-2xl font-bold text-primary font-mono">
                           {(scores.pass_rate * 100).toFixed(1)}%
                         </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Passed</span>
-                        <span className="text-white">
-                          {scores.passed_tests} / {scores.total_tests}
-                        </span>
+                      <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-primary to-green-400"
+                          style={{ width: `${scores.pass_rate * 100}%` }}
+                        />
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Avg Latency</span>
-                        <span className="text-white">
-                          {scores.avg_latency_ms.toFixed(0)}ms
-                        </span>
-                      </div>
-                      {scores.metric_averages && Object.entries(scores.metric_averages).map(([mName, mVal]) => (
-                        <div key={mName} className="flex justify-between">
-                          <span className="text-gray-400 capitalize">{mName.replace('_', ' ')}</span>
-                          <span className="text-white">
-                            {(mVal as number).toFixed(2)}
-                          </span>
+                      <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-white/10">
+                        <div>
+                          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1 font-mono">Passed</div>
+                          <div className="text-lg font-bold text-green-400 font-mono">{scores.passed_tests}</div>
                         </div>
-                      ))}
+                        <div>
+                          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1 font-mono">Total</div>
+                          <div className="text-lg font-bold text-white font-mono">{scores.total_tests}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1 font-mono">Avg Latency</div>
+                          <div className="text-lg font-bold text-blue-400 font-mono">{Math.round(scores.avg_latency_ms * 100) / 100}ms</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1 font-mono">Avg Score</div>
+                          <div className="text-lg font-bold text-yellow-400 font-mono">{scores.avg_score?.toFixed(2) || 'N/A'}</div>
+                        </div>
+                      </div>
+                      {scores.metric_averages && Object.keys(scores.metric_averages).length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-white/10 space-y-2">
+                          {Object.entries(scores.metric_averages).map(([mName, mVal]) => (
+                            <div key={mName} className="flex justify-between">
+                              <span className="text-gray-400 text-sm capitalize font-mono">{mName.replace('_', ' ')}</span>
+                              <span className="text-white font-mono">{(mVal as number).toFixed(3)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -827,50 +1043,77 @@ const CampaignDetailModal: React.FC<CampaignDetailModalProps> = ({
 
           {/* Error Message */}
           {campaignData.error_message && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4">
-              <p className="text-red-400">{campaignData.error_message}</p>
+            <div
+              className="p-6 rounded-2xl"
+              style={{
+                background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(220, 38, 38, 0.05))',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+              }}
+            >
+              <div className="flex items-center gap-3 mb-2">
+                <span className="material-symbols-outlined text-red-400">error</span>
+                <span className="text-sm font-bold text-red-400 uppercase tracking-wider font-mono">Error</span>
+              </div>
+              <p className="text-red-300 font-mono">{campaignData.error_message}</p>
             </div>
           )}
 
-          {/* Test Case Results */}
+          {/* Test Case Results Table */}
           {campaignData.status === 'completed' && campaignData.results && campaignData.results.length > 0 && (
             <div>
-              <h3 className="text-lg font-bold text-white mb-4">Detailed Results</h3>
-              <div className="overflow-x-auto border border-white/10 rounded-xl">
+              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2 font-mono">
+                <span className="material-symbols-outlined text-blue-400">format_list_bulleted</span>
+                Detailed Results ({campaignData.results.length} cases)
+              </h3>
+              <div
+                className="rounded-2xl overflow-hidden"
+                style={{
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                }}
+              >
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="bg-white/5 border-b border-white/10">
-                      <th className="p-4 text-sm font-medium text-gray-400">Test Case</th>
-                      <th className="p-4 text-sm font-medium text-gray-400">Model</th>
-                      <th className="p-4 text-sm font-medium text-gray-400">Expected</th>
-                      <th className="p-4 text-sm font-medium text-gray-400">Response</th>
-                      <th className="p-4 text-sm font-medium text-gray-400 text-center">Status</th>
-                      <th className="p-4 text-sm font-medium text-gray-400 text-center">Metrics</th>
+                    <tr style={{ background: 'rgba(255, 255, 255, 0.03)' }}>
+                      <th className="p-4 text-xs font-bold text-gray-400 uppercase tracking-wider font-mono">Test Case</th>
+                      <th className="p-4 text-xs font-bold text-gray-400 uppercase tracking-wider font-mono">Model</th>
+                      <th className="p-4 text-xs font-bold text-gray-400 uppercase tracking-wider font-mono">Expected</th>
+                      <th className="p-4 text-xs font-bold text-gray-400 uppercase tracking-wider font-mono">Response</th>
+                      <th className="p-4 text-xs font-bold text-gray-400 uppercase tracking-wider font-mono text-center">Status</th>
+                      <th className="p-4 text-xs font-bold text-gray-400 uppercase tracking-wider font-mono text-center">Metrics</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {campaignData.results.map((res: any, idx: number) => (
                       <tr key={idx} className="hover:bg-white/5 transition-colors">
-                        <td className="p-4 text-sm text-white font-medium max-w-[150px] truncate" title={res.test_case_name || 'Test Case'}>
-                          {res.test_case_name || 'Test Case'}
+                        <td className="p-4 text-sm text-white font-medium font-mono max-w-[150px] truncate" title={res.test_case_name || 'Test Case'}>
+                          {res.test_case_name || `Case ${idx + 1}`}
                         </td>
-                        <td className="p-4 text-sm text-gray-300">
+                        <td className="p-4 text-sm text-gray-300 font-mono">
                           {res.model_name}
                         </td>
-                        <td className="p-4 text-sm text-gray-300 max-w-[200px] truncate" title={res.expected_response || '-'}>
+                        <td className="p-4 text-sm text-gray-300 font-mono max-w-[200px] truncate" title={res.expected_response || '-'}>
                           {res.expected_response || '-'}
                         </td>
-                        <td className="p-4 text-sm text-white max-w-[300px] truncate" title={res.model_response || '-'}>
+                        <td className="p-4 text-sm text-white font-mono max-w-[300px] truncate" title={res.model_response || '-'}>
                           {res.model_response || '-'}
                         </td>
                         <td className="p-4 text-center">
-                          <StatusBadge status={res.passed ? 'success' : 'error'} />
+                          <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold uppercase ${
+                            res.passed 
+                              ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+                              : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                          }`}>
+                            <span className="material-symbols-outlined text-[14px]">
+                              {res.passed ? 'check_circle' : 'cancel'}
+                            </span>
+                            {res.passed ? 'Pass' : 'Fail'}
+                          </span>
                         </td>
                         <td className="p-4 text-sm text-gray-400">
                           {res.metric_scores && res.metric_scores.length > 0 ? (
                             <div className="flex flex-wrap gap-1 justify-center">
                               {res.metric_scores.map((m: any, i: number) => (
-                                <span key={i} className="text-[10px] px-1.5 py-0.5 bg-white/10 rounded" title={`${m.metric_name}: ${m.score}`}>
+                                <span key={i} className="text-[10px] px-2 py-1 bg-white/10 rounded-lg font-mono" title={`${m.metric_name}: ${m.score}`}>
                                   {m.metric_name}: {typeof m.score === 'number' ? m.score.toFixed(2) : m.score}
                                 </span>
                               ))}
@@ -1161,7 +1404,7 @@ const ModelComparison: React.FC<ModelComparisonProps> = ({
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-400">Avg Latency</span>
-                    <span className="text-white">{scores.avg_latency_ms.toFixed(0)}ms</span>
+                    <span className="text-white">{Math.round(scores.avg_latency_ms * 100) / 100}ms</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-400">Total Tokens</span>

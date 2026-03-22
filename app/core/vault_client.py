@@ -53,7 +53,7 @@ class VaultClient:
                     self.client.secrets.transit.create_key,
                     name=self.transit_key,
                     convergent_encryption=True,
-                    derived=False
+                    derived=True
                 )
                 logger.info("✓ Created transit key")
             except Exception as e:

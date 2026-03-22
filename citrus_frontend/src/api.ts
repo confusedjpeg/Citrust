@@ -67,6 +67,9 @@ export interface Trace {
   };
   spans?: TraceSpan[];
   metadata?: Record<string, any>;
+  // Privacy-related fields
+  privacy_score?: number;
+  vault_processed?: boolean;
 }
 
 export interface TraceSpan {
@@ -87,6 +90,9 @@ export interface TraceSpan {
   output?: any;
   error?: string;
   metadata?: Record<string, any>;
+  // Privacy-related fields
+  has_pii?: boolean;
+  pii_fields?: string[];
 }
 
 export interface TraceStatistics {
