@@ -7,6 +7,7 @@ import { EvaluationCard } from '../components/EvaluationCard';
 import { EvaluationStatus } from '../components/EvaluationStatus';
 import { Shield, Lock } from 'lucide-react';
 import { getTraces, getTrace, type Trace } from '../api';
+import { fetchCampaigns, type Campaign } from '../api_evaluations';
 import { LoadingSpinner, EmptyState } from '../components/UIComponents';
 import { formatDuration } from '../utils';
 import { usePrivacy } from '../context/PrivacyContext';
@@ -29,6 +30,10 @@ export const PrivacyTracesPage: React.FC = () => {
   const [activeView, setActiveView] = useState<'traces' | 'evaluations' | 'audit'>('traces');
   const [loading, setLoading] = useState(true);
   
+  // Real campaigns from API
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  
   // Get privacy context for Evaluation column
   const { isPrivacyModeEnabled, activeCampaignID } = usePrivacy();
 
@@ -41,11 +46,47 @@ export const PrivacyTracesPage: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleViewEvaluation = (evaluationId: string) => {
-    // Find the evaluation details
-    const evaluation = sampleEvaluations.find(e => e.id === evaluationId);
-    if (evaluation) {
-      setSelectedEvaluation(evaluation);
+  // Load campaigns when switching to evaluations tab
+  useEffect(() => {
+    if (activeView === 'evaluations') {
+      loadCampaigns();
+    }
+  }, [activeView]);
+
+  const loadCampaigns = async () => {
+    setCampaignsLoading(true);
+    try {
+      const response = await fetchCampaigns({ limit: 50 });
+      setCampaigns(response.campaigns || []);
+    } catch (err) {
+      console.error('Failed to load campaigns:', err);
+    } finally {
+      setCampaignsLoading(false);
+    }
+  };
+
+  const handleViewEvaluation = (campaignId: string) => {
+    // Find the campaign details
+    const campaign = campaigns.find(c => c.id === campaignId);
+    if (campaign) {
+      // Map campaign to evaluation format for EvaluationDetailView
+      setSelectedEvaluation({
+        id: campaign.id,
+        name: campaign.name,
+        model: campaign.model_configs.map(m => m.model_name).join(', '),
+        testSet: campaign.test_set_id,
+        status: campaign.status,
+        metrics: {
+          accuracy: campaign.model_scores[campaign.model_configs[0]?.model_name]?.pass_rate || 0,
+          f1_score: campaign.model_scores[campaign.model_configs[0]?.model_name]?.avg_score || 0,
+          latency_p95: campaign.model_scores[campaign.model_configs[0]?.model_name]?.avg_latency_ms || 0,
+          total_evaluations: campaign.total_test_cases,
+          privacy_score: 100,
+          dp_protected: isPrivacyModeEnabled,
+        },
+        createdAt: campaign.created_at,
+        dpProtected: isPrivacyModeEnabled,
+      });
     }
   };
 
@@ -80,61 +121,6 @@ export const PrivacyTracesPage: React.FC = () => {
       console.error('[PrivacyTracesPage] Failed to load trace details:', err);
     }
   };
-
-  // Sample evaluations
-  const sampleEvaluations = [
-    {
-      id: '1',
-      name: 'Q4 Customer Support Evaluation',
-      model: 'gpt-4-turbo',
-      testSet: 'support-queries-v2',
-      status: 'completed' as const,
-      metrics: {
-        accuracy: 0.94,
-        f1_score: 0.921,
-        latency_p95: 2340,
-        total_evaluations: 500,
-        privacy_score: 100,
-        dp_protected: true,
-      },
-      createdAt: new Date(Date.now() - 86400000).toISOString(),
-      dpProtected: true,
-    },
-    {
-      id: '2',
-      name: 'Product Recommendations Test',
-      model: 'claude-3-opus',
-      testSet: 'recommendations-v1',
-      status: 'running' as const,
-      metrics: {
-        accuracy: 0,
-        f1_score: 0,
-        latency_p95: 0,
-        total_evaluations: 67,
-        privacy_score: 100,
-        dp_protected: true,
-      },
-      createdAt: new Date().toISOString(),
-      dpProtected: true,
-    },
-    {
-      id: '3',
-      name: 'Legacy System Evaluation',
-      model: 'gpt-3.5-turbo',
-      testSet: 'legacy-queries',
-      status: 'completed' as const,
-      metrics: {
-        accuracy: 0.87,
-        f1_score: 0.845,
-        latency_p95: 1200,
-        total_evaluations: 250,
-        privacy_score: 45,
-        dp_protected: false,
-      },
-      createdAt: new Date(Date.now() - 172800000).toISOString(),
-      dpProtected: false,
-    },
-  ];
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -314,15 +300,52 @@ export const PrivacyTracesPage: React.FC = () => {
 
         {activeView === 'evaluations' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {sampleEvaluations.map((evaluation) => (
-                <EvaluationCard 
-                  key={evaluation.id} 
-                  {...evaluation}
-                  onClick={() => handleViewEvaluation(evaluation.id)}
-                />
-              ))}
-            </div>
+            {campaignsLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <LoadingSpinner size="lg" text="Loading campaigns..." />
+              </div>
+            ) : campaigns.length === 0 ? (
+              <EmptyState
+                icon="campaign"
+                title="No evaluation campaigns found"
+                description="Create an evaluation campaign from the Evaluations page to see it here"
+              />
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {campaigns.map((campaign) => {
+                  // Get first model's scores for display
+                  const firstModel = campaign.model_configs[0]?.model_name;
+                  const modelScore = firstModel ? campaign.model_scores[firstModel] : null;
+                  
+                  // Map campaign status to EvaluationCard status
+                  const cardStatus: 'completed' | 'running' | 'failed' = 
+                    campaign.status === 'completed' ? 'completed' :
+                    campaign.status === 'running' ? 'running' :
+                    campaign.status === 'failed' ? 'failed' : 'running';
+                  
+                  return (
+                    <EvaluationCard 
+                      key={campaign.id}
+                      name={campaign.name}
+                      model={campaign.model_configs.map(m => m.model_name).join(' vs ')}
+                      testSet={campaign.test_set_id}
+                      status={cardStatus}
+                      metrics={{
+                        accuracy: modelScore?.pass_rate || 0,
+                        f1_score: modelScore?.avg_score || 0,
+                        latency_p95: modelScore?.avg_latency_ms || 0,
+                        total_evaluations: campaign.completed_test_cases,
+                        privacy_score: 100,
+                        dp_protected: isPrivacyModeEnabled,
+                      }}
+                      createdAt={campaign.created_at}
+                      dpProtected={isPrivacyModeEnabled}
+                      onClick={() => handleViewEvaluation(campaign.id)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
